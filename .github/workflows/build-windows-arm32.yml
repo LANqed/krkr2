@@ -15,24 +15,58 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64_arm
+          sdk: 10.0.22621.0
 
       - name: Check compiler
         shell: cmd
         run: |
+          echo === MSVC ===
           cl
+
+          echo.
+          echo === Windows SDK ===
+          echo WindowsSdkDir=%WindowsSdkDir%
+          echo WindowsSDKVersion=%WindowsSDKVersion%
+
+      - name: Check ARM32 libraries
+        shell: powershell
+        run: |
+          Write-Host "=== Windows SDK ==="
+          Write-Host "WindowsSdkDir = $env:WindowsSdkDir"
+          Write-Host "WindowsSDKVersion = $env:WindowsSDKVersion"
+
+          $kernel32 = Join-Path `
+            $env:WindowsSdkDir `
+            "Lib\$env:WindowsSDKVersion\um\arm\kernel32.lib"
+
+          Write-Host ""
+          Write-Host "Checking:"
+          Write-Host $kernel32
+
+          if (-not (Test-Path $kernel32)) {
+            Write-Error "ARM32 kernel32.lib not found!"
+            exit 1
+          }
+
+          Write-Host "ARM32 kernel32.lib found."
 
       - name: Build ARM32 test
         shell: cmd
         run: |
           echo int main(void) { return 0; } > test.c
-          cl /nologo /O2 /MT test.c /link /SUBSYSTEM:CONSOLE /OUT:test-arm32.exe
+
+          cl /nologo /O2 /MT test.c ^
+            /link ^
+            /SUBSYSTEM:CONSOLE ^
+            /OUT:test-arm32.exe
 
       - name: Inspect PE
         shell: powershell
         run: |
+          Write-Host "=== PE Headers ==="
           dumpbin /headers test-arm32.exe | Select-String "machine|ARM"
 
-      - name: Upload test
+      - name: Upload ARM32 test
         uses: actions/upload-artifact@v4
         with:
           name: arm32-test
