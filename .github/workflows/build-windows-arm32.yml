@@ -165,7 +165,17 @@ jobs:
           where.exe cl
 
           Write-Host ""
-          cl 2>&1 | Select-Object -First 2
+          Write-Host "=== ARM compiler ==="
+
+          $armCl = Get-Command cl.exe |
+            Select-Object -First 1 -ExpandProperty Source
+
+          Write-Host "cl.exe = $armCl"
+
+          & $armCl 2>&1 |
+            Select-Object -First 2
+
+          $global:LASTEXITCODE = 0
 
           Write-Host ""
           Write-Host "=== Active link.exe ==="
@@ -173,13 +183,28 @@ jobs:
           where.exe link
 
           Write-Host ""
-          link 2>&1 | Select-Object -First 2
+          Write-Host "=== ARM linker ==="
+
+          $armLink = Get-Command link.exe |
+            Select-Object -First 1 -ExpandProperty Source
+
+          Write-Host "link.exe = $armLink"
+
+          & $armLink 2>&1 |
+            Select-Object -First 2
+
+          $global:LASTEXITCODE = 0
 
           Write-Host ""
-          Write-Host "=== vcpkg triplet ==="
+          Write-Host "=== ARM32 triplet ==="
 
           Get-Content `
             "$env:GITHUB_WORKSPACE\vcpkg\triplets\arm-windows-static-md.cmake"
+
+          Write-Host ""
+          Write-Host "=== vcpkg version ==="
+
+          & "$env:VCPKG_ROOT\vcpkg.exe" version
 
       # ============================================================
       # Install ARM32 dependencies
