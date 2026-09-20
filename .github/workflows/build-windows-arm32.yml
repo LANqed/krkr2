@@ -21,8 +21,19 @@ jobs:
         run: |
           cl
 
-      - name: Check target
+      - name: Build ARM32 test
+        shell: cmd
+        run: |
+          echo int main(void) { return 0; } > test.c
+          cl /nologo /O2 /MT test.c /link /SUBSYSTEM:CONSOLE /OUT:test-arm32.exe
+
+      - name: Inspect PE
         shell: powershell
         run: |
-          Write-Host "VCToolsInstallDir=$env:VCToolsInstallDir"
-          Write-Host "VSCMD_ARG_TGT_ARCH=$env:VSCMD_ARG_TGT_ARCH"
+          dumpbin /headers test-arm32.exe | Select-String "machine|ARM"
+
+      - name: Upload test
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm32-test
+          path: test-arm32.exe
