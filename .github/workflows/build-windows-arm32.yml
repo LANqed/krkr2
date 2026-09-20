@@ -152,6 +152,82 @@ jobs:
             --allow-unsupported `
             --clean-after-build
 
+      - name: Diagnose vcpkg compiler detection
+        if: always()
+        shell: powershell
+        run: |
+          $root = $env:VCPKG_ROOT
+
+          Write-Host "=== Active compiler commands ==="
+          where.exe cl
+          where.exe link
+          where.exe rc
+
+          Write-Host ""
+          Write-Host "=== Compiler environment ==="
+          Write-Host "VCPKG_ROOT=$env:VCPKG_ROOT"
+          Write-Host "VCPKG_DEFAULT_TRIPLET=$env:VCPKG_DEFAULT_TRIPLET"
+          Write-Host "VCPKG_TARGET_TRIPLET=$env:VCPKG_TARGET_TRIPLET"
+          Write-Host "VCPKG_HOST_TRIPLET=$env:VCPKG_HOST_TRIPLET"
+          Write-Host "VSCMD_ARG_TGT_ARCH=$env:VSCMD_ARG_TGT_ARCH"
+
+          Write-Host ""
+          Write-Host "=== cl.exe ==="
+          cl 2>&1 | Select-Object -First 4
+
+          Write-Host ""
+          Write-Host "=== detect_compiler files ==="
+          $dir = Join-Path $root "buildtrees\detect_compiler"
+
+          if (Test-Path $dir) {
+            Get-ChildItem $dir -Recurse -File |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 30 FullName,Length,LastWriteTime |
+              Format-Table -AutoSize
+          }
+          else {
+            Write-Host "detect_compiler directory does not exist."
+          }
+
+          Write-Host ""
+          Write-Host "=== detect_compiler logs ==="
+
+          $logs = @(
+            (Join-Path $dir "stdout-arm-windows-static-md.log"),
+            (Join-Path $dir "config-arm-windows-static-md-out.log"),
+            (Join-Path $dir "config-arm-windows-static-md-err.log"),
+            (Join-Path $dir "config-arm-windows-static-md-CMakeCache.txt.log")
+          )
+
+          foreach ($log in $logs) {
+            Write-Host ""
+            Write-Host "===== $log ====="
+
+            if (Test-Path $log) {
+              Get-Content $log -ErrorAction Continue
+            }
+            else {
+              Write-Host "[MISSING]"
+            }
+          }
+
+          Write-Host ""
+          Write-Host "=== vcpkg manifest install log ==="
+
+          $manifestLog = Get-ChildItem `
+            $env:GITHUB_WORKSPACE `
+            -Recurse `
+            -Filter "vcpkg-manifest-install.log" `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if ($manifestLog) {
+            Get-Content $manifestLog.FullName -ErrorAction Continue
+          }
+          else {
+            Write-Host "vcpkg-manifest-install.log not found."
+          }
+
       # ------------------------------------------------------------
       # Configure CMake
       # ------------------------------------------------------------
