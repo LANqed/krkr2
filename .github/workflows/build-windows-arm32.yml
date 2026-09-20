@@ -149,6 +149,7 @@ jobs:
           & $vcpkg install `
             --triplet arm-windows-static-md `
             --x-manifest-root="$env:GITHUB_WORKSPACE" `
+            --allow-unsupported `
             --clean-after-build
 
       # ------------------------------------------------------------
