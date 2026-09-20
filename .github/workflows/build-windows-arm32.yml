@@ -8,16 +8,29 @@ jobs:
     runs-on: windows-2022
 
     steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ------------------------------------------------------------
+      # Setup MSVC ARM32
+      #
+      # Windows SDK 10.0.26100 no longer provides ARM32 libraries.
+      # 10.0.22621 still contains:
+      #   Windows Kits\10\Lib\10.0.22621.0\um\arm\kernel32.lib
+      # ------------------------------------------------------------
       - name: Setup MSVC ARM32
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64_arm
           sdk: 10.0.22621.0
 
-      - name: Check compiler
+      # ------------------------------------------------------------
+      # Check compiler / SDK
+      # ------------------------------------------------------------
+      - name: Check ARM32 toolchain
         shell: cmd
         run: |
           echo === MSVC ===
@@ -28,46 +41,228 @@ jobs:
           echo WindowsSdkDir=%WindowsSdkDir%
           echo WindowsSDKVersion=%WindowsSDKVersion%
 
-      - name: Check ARM32 libraries
+          echo.
+          echo === CMake ===
+          cmake --version
+
+          echo.
+          echo === Ninja ===
+          ninja --version
+
+      # ------------------------------------------------------------
+      # Check ARM32 Windows libraries
+      # ------------------------------------------------------------
+      - name: Check ARM32 Windows libraries
         shell: powershell
         run: |
-          Write-Host "=== Windows SDK ==="
-          Write-Host "WindowsSdkDir = $env:WindowsSdkDir"
-          Write-Host "WindowsSDKVersion = $env:WindowsSDKVersion"
+          $sdk = $env:WindowsSDKVersion.TrimEnd('\')
+          $sdkDir = $env:WindowsSdkDir.TrimEnd('\')
 
-          $kernel32 = Join-Path `
-            $env:WindowsSdkDir `
-            "Lib\$env:WindowsSDKVersion\um\arm\kernel32.lib"
+          Write-Host "SDK: $sdk"
+          Write-Host "SDK directory: $sdkDir"
 
-          Write-Host ""
-          Write-Host "Checking:"
-          Write-Host $kernel32
+          $libraries = @(
+            "$sdkDir\Lib\$sdk\um\arm\kernel32.lib",
+            "$sdkDir\Lib\$sdk\um\arm\user32.lib",
+            "$sdkDir\Lib\$sdk\um\arm\gdi32.lib",
+            "$sdkDir\Lib\$sdk\um\arm\advapi32.lib",
+            "$sdkDir\Lib\$sdk\um\arm\shell32.lib",
+            "$sdkDir\Lib\$sdk\um\arm\ole32.lib"
+          )
 
-          if (-not (Test-Path $kernel32)) {
-            Write-Error "ARM32 kernel32.lib not found!"
+          foreach ($lib in $libraries) {
+            if (Test-Path $lib) {
+              Write-Host "[OK] $lib"
+            }
+            else {
+              Write-Error "[MISSING] $lib"
+              exit 1
+            }
+          }
+
+      # ------------------------------------------------------------
+      # Install vcpkg
+      # ------------------------------------------------------------
+      - name: Setup vcpkg
+        shell: powershell
+        run: |
+          if (-not (Test-Path "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe")) {
+            Write-Host "VCPKG_INSTALLATION_ROOT is not available."
             exit 1
           }
 
-          Write-Host "ARM32 kernel32.lib found."
+          $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe"
 
-      - name: Build ARM32 test
-        shell: cmd
-        run: |
-          echo int main(void) { return 0; } > test.c
+          Write-Host "vcpkg: $vcpkg"
+          & $vcpkg version
 
-          cl /nologo /O2 /MT test.c ^
-            /link ^
-            /SUBSYSTEM:CONSOLE ^
-            /OUT:test-arm32.exe
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
 
-      - name: Inspect PE
+      # ------------------------------------------------------------
+      # Create ARM32 vcpkg triplet
+      #
+      # arm-windows is the target architecture.
+      # We use dynamic MSVC runtime here because the original
+      # Windows preset uses x64-windows-static-md.
+      # ------------------------------------------------------------
+      - name: Create ARM32 vcpkg triplet
         shell: powershell
         run: |
-          Write-Host "=== PE Headers ==="
-          dumpbin /headers test-arm32.exe | Select-String "machine|ARM"
+          $tripletDir = Join-Path $env:GITHUB_WORKSPACE "vcpkg\triplets"
 
-      - name: Upload ARM32 test
+          New-Item -ItemType Directory -Force -Path $tripletDir | Out-Null
+
+          $triplet = @"
+          set(VCPKG_TARGET_ARCHITECTURE arm)
+          set(VCPKG_CMAKE_SYSTEM_NAME Windows)
+          set(VCPKG_CRT_LINKAGE dynamic)
+          set(VCPKG_LIBRARY_LINKAGE static)
+          "@
+
+          $tripletPath = Join-Path $tripletDir "arm-windows-static-md.cmake"
+
+          Set-Content `
+            -Path $tripletPath `
+            -Value $triplet `
+            -Encoding UTF8
+
+          Write-Host "Created:"
+          Get-Content $tripletPath
+
+      # ------------------------------------------------------------
+      # Install dependencies
+      #
+      # Manifest mode automatically reads:
+      #   vcpkg.json
+      #   vcpkg-configuration.json
+      #
+      # The custom triplet forces ARM32.
+      # ------------------------------------------------------------
+      - name: Install ARM32 dependencies
+        shell: powershell
+        env:
+          VCPKG_FEATURE_FLAGS: manifests
+          VCPKG_DISABLE_METRICS: 1
+        run: |
+          $vcpkg = "$env:VCPKG_ROOT\vcpkg.exe"
+
+          & $vcpkg install `
+            --triplet arm-windows-static-md `
+            --x-manifest-root="$env:GITHUB_WORKSPACE" `
+            --clean-after-build
+
+      # ------------------------------------------------------------
+      # Configure CMake
+      # ------------------------------------------------------------
+      - name: Configure ARM32
+        shell: cmd
+        env:
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+        run: |
+          cmake -S . -B out/windows/arm32 ^
+            -G Ninja ^
+            -DWINDOWS=TRUE ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_SYSTEM_NAME=Windows ^
+            -DCMAKE_SYSTEM_PROCESSOR=ARM ^
+            -DCMAKE_GENERATOR_PLATFORM=ARM ^
+            -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+            -DVCPKG_TARGET_TRIPLET=arm-windows-static-md ^
+            -DVCPKG_HOST_TRIPLET=x64-windows ^
+            -DENABLE_TESTS=OFF ^
+            -DBUILD_TOOLS=OFF ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+
+      # ------------------------------------------------------------
+      # Build krkr2
+      # ------------------------------------------------------------
+      - name: Build krkr2 ARM32
+        shell: cmd
+        run: |
+          cmake --build out/windows/arm32 --config Release --parallel
+
+      # ------------------------------------------------------------
+      # Find generated executable
+      # ------------------------------------------------------------
+      - name: Locate krkr2.exe
+        shell: powershell
+        run: |
+          Write-Host "=== Searching for krkr2.exe ==="
+
+          $files = Get-ChildItem `
+            "$env:GITHUB_WORKSPACE\out\windows\arm32" `
+            -Recurse `
+            -Filter "krkr2.exe"
+
+          if ($files.Count -eq 0) {
+            Write-Error "krkr2.exe was not found!"
+            exit 1
+          }
+
+          foreach ($file in $files) {
+            Write-Host "[FOUND] $($file.FullName)"
+            Write-Host "Size: $($file.Length) bytes"
+          }
+
+      # ------------------------------------------------------------
+      # Verify PE architecture
+      # ------------------------------------------------------------
+      - name: Verify ARM32 PE
+        shell: powershell
+        run: |
+          $exe = Get-ChildItem `
+            "$env:GITHUB_WORKSPACE\out\windows\arm32" `
+            -Recurse `
+            -Filter "krkr2.exe" |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            Write-Error "krkr2.exe not found."
+            exit 1
+          }
+
+          Write-Host "=== PE Headers ==="
+          dumpbin /headers $exe.FullName |
+            Select-String "machine|ARM"
+
+      # ------------------------------------------------------------
+      # Package
+      # ------------------------------------------------------------
+      - name: Package ARM32 build
+        shell: powershell
+        run: |
+          $exe = Get-ChildItem `
+            "$env:GITHUB_WORKSPACE\out\windows\arm32" `
+            -Recurse `
+            -Filter "krkr2.exe" |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            Write-Error "krkr2.exe not found."
+            exit 1
+          }
+
+          $package = "$env:GITHUB_WORKSPACE\krkr2-windows-arm32"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $package |
+            Out-Null
+
+          Copy-Item `
+            $exe.FullName `
+            "$package\krkr2.exe"
+
+          Write-Host "Package:"
+          Get-ChildItem $package
+
+      # ------------------------------------------------------------
+      # Upload artifact
+      # ------------------------------------------------------------
+      - name: Upload ARM32 build
         uses: actions/upload-artifact@v4
         with:
-          name: arm32-test
-          path: test-arm32.exe
+          name: krkr2-windows-arm32
+          path: krkr2-windows-arm32
+          if-no-files-found: error
