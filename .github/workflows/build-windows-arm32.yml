@@ -8,28 +8,24 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      # ------------------------------------------------------------
+      # ============================================================
       # Checkout
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Setup MSVC ARM32
-      #
-      # Windows SDK 10.0.26100 no longer provides ARM32 libraries.
-      # 10.0.22621 still contains:
-      #   Windows Kits\10\Lib\10.0.22621.0\um\arm\kernel32.lib
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Setup MSVC ARM32
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64_arm
           sdk: 10.0.22621.0
 
-      # ------------------------------------------------------------
-      # Check compiler / SDK
-      # ------------------------------------------------------------
+      # ============================================================
+      # Check ARM32 toolchain
+      # ============================================================
       - name: Check ARM32 toolchain
         shell: cmd
         run: |
@@ -37,9 +33,14 @@ jobs:
           cl
 
           echo.
+          echo === LINK ===
+          link
+
+          echo.
           echo === Windows SDK ===
           echo WindowsSdkDir=%WindowsSdkDir%
           echo WindowsSDKVersion=%WindowsSDKVersion%
+          echo VSCMD_ARG_TGT_ARCH=%VSCMD_ARG_TGT_ARCH%
 
           echo.
           echo === CMake ===
@@ -49,9 +50,9 @@ jobs:
           echo === Ninja ===
           ninja --version
 
-      # ------------------------------------------------------------
-      # Check ARM32 Windows libraries
-      # ------------------------------------------------------------
+      # ============================================================
+      # Verify ARM32 Windows libraries
+      # ============================================================
       - name: Check ARM32 Windows libraries
         shell: powershell
         run: |
@@ -80,9 +81,9 @@ jobs:
             }
           }
 
-      # ------------------------------------------------------------
-      # Install vcpkg
-      # ------------------------------------------------------------
+      # ============================================================
+      # Setup vcpkg
+      # ============================================================
       - name: Setup vcpkg
         shell: powershell
         run: |
@@ -94,64 +95,120 @@ jobs:
           $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe"
 
           Write-Host "vcpkg: $vcpkg"
+
           & $vcpkg version
 
           "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Create ARM32 vcpkg triplet
-      #
-      # arm-windows is the target architecture.
-      # We use dynamic MSVC runtime here because the original
-      # Windows preset uses x64-windows-static-md.
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Create ARM32 vcpkg triplet
         shell: powershell
         run: |
           $tripletDir = Join-Path $env:GITHUB_WORKSPACE "vcpkg\triplets"
 
-          New-Item -ItemType Directory -Force -Path $tripletDir | Out-Null
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $tripletDir |
+            Out-Null
 
           $triplet = @"
           set(VCPKG_TARGET_ARCHITECTURE arm)
           set(VCPKG_CMAKE_SYSTEM_NAME Windows)
+
           set(VCPKG_CRT_LINKAGE dynamic)
           set(VCPKG_LIBRARY_LINKAGE static)
+
+          # GitHub Actions already initialized the ARM32
+          # Visual Studio environment through vcvars.
+          #
+          # Prevent vcpkg from replacing it with its own
+          # Visual Studio environment.
+          set(VCPKG_LOAD_VCVARS_ENV OFF)
           "@
 
-          $tripletPath = Join-Path $tripletDir "arm-windows-static-md.cmake"
+          $tripletPath = Join-Path `
+            $tripletDir `
+            "arm-windows-static-md.cmake"
 
           Set-Content `
             -Path $tripletPath `
             -Value $triplet `
             -Encoding UTF8
 
-          Write-Host "Created:"
+          Write-Host "Created triplet:"
+          Write-Host ""
+
           Get-Content $tripletPath
 
-      # ------------------------------------------------------------
-      # Install dependencies
-      #
-      # Manifest mode automatically reads:
-      #   vcpkg.json
-      #   vcpkg-configuration.json
-      #
-      # The custom triplet forces ARM32.
-      # ------------------------------------------------------------
+      # ============================================================
+      # Verify vcpkg sees ARM compiler
+      # ============================================================
+      - name: Verify vcpkg ARM environment
+        shell: powershell
+        env:
+          VCPKG_DEFAULT_TRIPLET: arm-windows-static-md
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows
+        run: |
+          Write-Host "=== Environment ==="
+
+          Write-Host "VCPKG_ROOT=$env:VCPKG_ROOT"
+          Write-Host "VCPKG_DEFAULT_TRIPLET=$env:VCPKG_DEFAULT_TRIPLET"
+          Write-Host "VCPKG_DEFAULT_HOST_TRIPLET=$env:VCPKG_DEFAULT_HOST_TRIPLET"
+          Write-Host "VSCMD_ARG_TGT_ARCH=$env:VSCMD_ARG_TGT_ARCH"
+
+          Write-Host ""
+          Write-Host "=== Active cl.exe ==="
+
+          where.exe cl
+
+          Write-Host ""
+          cl 2>&1 | Select-Object -First 2
+
+          Write-Host ""
+          Write-Host "=== Active link.exe ==="
+
+          where.exe link
+
+          Write-Host ""
+          link 2>&1 | Select-Object -First 2
+
+          Write-Host ""
+          Write-Host "=== vcpkg triplet ==="
+
+          Get-Content `
+            "$env:GITHUB_WORKSPACE\vcpkg\triplets\arm-windows-static-md.cmake"
+
+      # ============================================================
+      # Install ARM32 dependencies
+      # ============================================================
       - name: Install ARM32 dependencies
         shell: powershell
         env:
           VCPKG_FEATURE_FLAGS: manifests
           VCPKG_DISABLE_METRICS: 1
+          VCPKG_DEFAULT_TRIPLET: arm-windows-static-md
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows
         run: |
           $vcpkg = "$env:VCPKG_ROOT\vcpkg.exe"
 
           & $vcpkg install `
             --triplet arm-windows-static-md `
+            --host-triplet x64-windows `
             --x-manifest-root="$env:GITHUB_WORKSPACE" `
             --allow-unsupported `
             --clean-after-build
 
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      # ============================================================
+      # Diagnose vcpkg compiler detection
+      # Always run if dependency installation fails
+      # ============================================================
       - name: Diagnose vcpkg compiler detection
         if: always()
         shell: powershell
@@ -159,30 +216,43 @@ jobs:
           $root = $env:VCPKG_ROOT
 
           Write-Host "=== Active compiler commands ==="
+
           where.exe cl
           where.exe link
           where.exe rc
 
           Write-Host ""
           Write-Host "=== Compiler environment ==="
+
           Write-Host "VCPKG_ROOT=$env:VCPKG_ROOT"
           Write-Host "VCPKG_DEFAULT_TRIPLET=$env:VCPKG_DEFAULT_TRIPLET"
+          Write-Host "VCPKG_DEFAULT_HOST_TRIPLET=$env:VCPKG_DEFAULT_HOST_TRIPLET"
           Write-Host "VCPKG_TARGET_TRIPLET=$env:VCPKG_TARGET_TRIPLET"
           Write-Host "VCPKG_HOST_TRIPLET=$env:VCPKG_HOST_TRIPLET"
           Write-Host "VSCMD_ARG_TGT_ARCH=$env:VSCMD_ARG_TGT_ARCH"
 
           Write-Host ""
           Write-Host "=== cl.exe ==="
+
           cl 2>&1 | Select-Object -First 4
 
           Write-Host ""
           Write-Host "=== detect_compiler files ==="
-          $dir = Join-Path $root "buildtrees\detect_compiler"
+
+          $dir = Join-Path `
+            $root `
+            "buildtrees\detect_compiler"
 
           if (Test-Path $dir) {
-            Get-ChildItem $dir -Recurse -File |
+            Get-ChildItem `
+              $dir `
+              -Recurse `
+              -File |
               Sort-Object LastWriteTime -Descending |
-              Select-Object -First 30 FullName,Length,LastWriteTime |
+              Select-Object -First 30 `
+                FullName,
+                Length,
+                LastWriteTime |
               Format-Table -AutoSize
           }
           else {
@@ -204,7 +274,9 @@ jobs:
             Write-Host "===== $log ====="
 
             if (Test-Path $log) {
-              Get-Content $log -ErrorAction Continue
+              Get-Content `
+                $log `
+                -ErrorAction Continue
             }
             else {
               Write-Host "[MISSING]"
@@ -222,19 +294,23 @@ jobs:
             Select-Object -First 1
 
           if ($manifestLog) {
-            Get-Content $manifestLog.FullName -ErrorAction Continue
+            Get-Content `
+              $manifestLog.FullName `
+              -ErrorAction Continue
           }
           else {
             Write-Host "vcpkg-manifest-install.log not found."
           }
 
-      # ------------------------------------------------------------
-      # Configure CMake
-      # ------------------------------------------------------------
+      # ============================================================
+      # Configure ARM32
+      # ============================================================
       - name: Configure ARM32
         shell: cmd
         env:
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          VCPKG_DEFAULT_TRIPLET: arm-windows-static-md
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows
         run: |
           cmake -S . -B out/windows/arm32 ^
             -G Ninja ^
@@ -250,22 +326,22 @@ jobs:
             -DBUILD_TOOLS=OFF ^
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
 
-      # ------------------------------------------------------------
-      # Build krkr2
-      # ------------------------------------------------------------
+      # ============================================================
+      # Build
+      # ============================================================
       - name: Build krkr2 ARM32
         shell: cmd
         run: |
-          cmake --build out/windows/arm32 --config Release --parallel
+          cmake --build out/windows/arm32 ^
+            --config Release ^
+            --parallel
 
-      # ------------------------------------------------------------
-      # Find generated executable
-      # ------------------------------------------------------------
+      # ============================================================
+      # Locate executable
+      # ============================================================
       - name: Locate krkr2.exe
         shell: powershell
         run: |
-          Write-Host "=== Searching for krkr2.exe ==="
-
           $files = Get-ChildItem `
             "$env:GITHUB_WORKSPACE\out\windows\arm32" `
             -Recurse `
@@ -281,9 +357,9 @@ jobs:
             Write-Host "Size: $($file.Length) bytes"
           }
 
-      # ------------------------------------------------------------
-      # Verify PE architecture
-      # ------------------------------------------------------------
+      # ============================================================
+      # Verify ARM32 PE
+      # ============================================================
       - name: Verify ARM32 PE
         shell: powershell
         run: |
@@ -298,13 +374,14 @@ jobs:
             exit 1
           }
 
-          Write-Host "=== PE Headers ==="
+          Write-Host "=== PE headers ==="
+
           dumpbin /headers $exe.FullName |
             Select-String "machine|ARM"
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Package
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Package ARM32 build
         shell: powershell
         run: |
@@ -319,7 +396,8 @@ jobs:
             exit 1
           }
 
-          $package = "$env:GITHUB_WORKSPACE\krkr2-windows-arm32"
+          $package = `
+            "$env:GITHUB_WORKSPACE\krkr2-windows-arm32"
 
           New-Item `
             -ItemType Directory `
@@ -331,12 +409,15 @@ jobs:
             $exe.FullName `
             "$package\krkr2.exe"
 
-          Write-Host "Package:"
-          Get-ChildItem $package
+          Write-Host "=== Package ==="
 
-      # ------------------------------------------------------------
+          Get-ChildItem `
+            $package `
+            -Recurse
+
+      # ============================================================
       # Upload artifact
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Upload ARM32 build
         uses: actions/upload-artifact@v4
         with:
