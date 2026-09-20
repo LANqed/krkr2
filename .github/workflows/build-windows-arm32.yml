@@ -1,0 +1,28 @@
+name: Build Windows ARM32
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC ARM32
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64_arm
+
+      - name: Check compiler
+        shell: cmd
+        run: |
+          cl
+
+      - name: Check target
+        shell: powershell
+        run: |
+          Write-Host "VCToolsInstallDir=$env:VCToolsInstallDir"
+          Write-Host "VSCMD_ARG_TGT_ARCH=$env:VSCMD_ARG_TGT_ARCH"
